@@ -8,7 +8,7 @@ const { createCanvas, loadImage, registerFont } = require('canvas');
 registerFont('./Pacifico-Regular.ttf', { family: 'Pacifico' });
 
 const BITRIX_WEBHOOK_URL = process.env.BITRIX_WEBHOOK_URL;
-const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, timeout: 30000 });
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 async function obtenerCumpleañerosHoy() {
