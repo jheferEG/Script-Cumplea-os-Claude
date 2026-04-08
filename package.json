@@ -1,0 +1,11 @@
+{
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.85.0",
+    "@google/generative-ai": "^0.24.1",
+    "axios": "^1.15.0",
+    "canvas": "^3.2.3",
+    "dotenv": "^17.4.1",
+    "openai": "^6.33.0",
+    "sharp": "^0.34.5"
+  }
+}
