@@ -11,10 +11,9 @@ const BITRIX_WEBHOOK_URL = process.env.BITRIX_WEBHOOK_URL;
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, timeout: 30000 });
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-async function obtenerCumpleañerosHoy() {
-    const hoy = new Date();
-    const mesHoy = hoy.getMonth() + 1;
-    const diaHoy = hoy.getDate();
+async function obtenerCumpleañerosPorFecha(fecha) {
+    const mes = fecha.getMonth() + 1;
+    const dia = fecha.getDate();
 
     let usuarios = [];
     let start = 0;
@@ -33,20 +32,21 @@ async function obtenerCumpleañerosHoy() {
 
     return usuarios.filter(user => {
         if (!user.PERSONAL_BIRTHDAY) return false;
-        const [fecha] = user.PERSONAL_BIRTHDAY.split('T');
-        const [, mes, dia] = fecha.split('-').map(Number);
-        return mes === mesHoy && dia === diaHoy;
+        const [fechaStr] = user.PERSONAL_BIRTHDAY.split('T');
+        const [, mesBD, diaBD] = fechaStr.split('-').map(Number);
+        return mesBD === mes && diaBD === dia;
     });
 }
 
-async function generarMensaje(nombre) {
+async function generarMensaje(nombre, contextoFDS = null) {
+    const prompt = contextoFDS
+        ? `Genera un mensaje de cumpleaños corporativo para ${nombre}. Su cumpleaños fue el ${contextoFDS} pasado, hoy lunes lo estamos celebrando. El mensaje debe estar en tiempo pasado mencionando que cumplió años el ${contextoFDS}, ser divertido pero profesional, agradecer sus labores y desearle cosas buenas en su vida personal y laboral. Máximo 4 oraciones. Solo el mensaje, sin títulos ni explicaciones.`
+        : `Genera un mensaje de cumpleaños corporativo para ${nombre}. Debe ser divertido pero profesional, agradecer sus labores y desearle cosas buenas en su vida personal y laboral. Máximo 4 oraciones. Solo el mensaje, sin títulos ni explicaciones.`;
+
     const response = await claude.messages.create({
         model: 'claude-opus-4-5',
         max_tokens: 300,
-        messages: [{
-            role: 'user',
-            content: `Genera un mensaje de cumpleaños corporativo para ${nombre}. Debe ser divertido pero profesional, agradecer sus labores y desearle cosas buenas en su vida personal y laboral. Máximo 4 oraciones. Solo el mensaje, sin títulos ni explicaciones.`
-        }]
+        messages: [{ role: 'user', content: prompt }]
     });
     return response.content[0].text;
 }
@@ -140,13 +140,13 @@ async function subirImagenBitrix(imageBuffer, nombre) {
     return response.data.result?.DOWNLOAD_URL;
 }
 
-async function publicarCumpleaños(empleado) {
+async function publicarCumpleaños(empleado, contextoFDS = null) {
     try {
         const nombre = `${empleado.NAME} ${empleado.LAST_NAME}`.trim();
-        console.log(`Generando mensaje e imagen para ${nombre}...`);
+        console.log(`Generando mensaje e imagen para ${nombre}${contextoFDS ? ` (cumpleaños del ${contextoFDS})` : ''}...`);
 
         const [textoGenerado, fondoUrl] = await Promise.all([
-            generarMensaje(nombre),
+            generarMensaje(nombre, contextoFDS),
             generarFondo()
         ]);
 
@@ -158,7 +158,11 @@ async function publicarCumpleaños(empleado) {
         const imagenUrl = await subirImagenBitrix(imagenFinal, nombre);
 
         console.log('Publicando en Bitrix24...');
-        const title = encodeURIComponent(`¡Feliz Cumpleaños ${nombre}! 🎂`);
+        const title = encodeURIComponent(
+            contextoFDS
+                ? `🎂 Celebramos el cumpleaños de ${nombre} (el ${contextoFDS} pasado)`
+                : `¡Feliz Cumpleaños ${nombre}! 🎂`
+        );
         const message = encodeURIComponent(`${textoGenerado}\n[IMG]${imagenUrl}[/IMG]`);
         const todosResponse = await axios.post(`${BITRIX_WEBHOOK_URL}user.get`, { ACTIVE: true, SELECT: ['ID'] });
         let body = `POST_TITLE=${title}&POST_MESSAGE=${message}`;
@@ -185,19 +189,50 @@ async function publicarCumpleaños(empleado) {
 
 async function main() {
     try {
-        console.log('Buscando cumpleañeros de hoy en Bitrix24...');
-        const cumpleañeros = await obtenerCumpleañerosHoy();
+        const hoy = new Date();
+        const diaSemana = hoy.getDay(); // 0=Dom, 1=Lun, ..., 6=Sáb
 
-        if (cumpleañeros.length === 0) {
-            console.log('No hay cumpleañeros hoy.');
+        if (diaSemana === 0 || diaSemana === 6) {
+            console.log('Hoy es fin de semana. No se publican felicitaciones.');
             return;
         }
 
-        console.log(`Encontrados ${cumpleañeros.length} cumpleañero(s):`);
-        cumpleañeros.forEach(u => console.log(` - ${u.NAME} ${u.LAST_NAME}`));
+        const tareas = [];
 
-        for (const empleado of cumpleañeros) {
-            await publicarCumpleaños(empleado);
+        // Cumpleaños de hoy (mensaje en presente)
+        console.log('Buscando cumpleañeros de hoy en Bitrix24...');
+        const cumpleHoy = await obtenerCumpleañerosPorFecha(hoy);
+        cumpleHoy.forEach(e => tareas.push({ empleado: e, contextoFDS: null }));
+
+        // Si es lunes, también buscar sábado y domingo anteriores
+        if (diaSemana === 1) {
+            const sabado = new Date(hoy);
+            sabado.setDate(hoy.getDate() - 2);
+            const domingo = new Date(hoy);
+            domingo.setDate(hoy.getDate() - 1);
+
+            console.log('Es lunes: buscando cumpleañeros del fin de semana...');
+            const [cumpleSabado, cumpleDomingo] = await Promise.all([
+                obtenerCumpleañerosPorFecha(sabado),
+                obtenerCumpleañerosPorFecha(domingo)
+            ]);
+
+            cumpleSabado.forEach(e => tareas.push({ empleado: e, contextoFDS: 'sábado' }));
+            cumpleDomingo.forEach(e => tareas.push({ empleado: e, contextoFDS: 'domingo' }));
+        }
+
+        if (tareas.length === 0) {
+            console.log('No hay cumpleañeros para publicar.');
+            return;
+        }
+
+        console.log(`Publicando ${tareas.length} felicitación(es):`);
+        tareas.forEach(({ empleado, contextoFDS }) =>
+            console.log(` - ${empleado.NAME} ${empleado.LAST_NAME}${contextoFDS ? ` (cumpleaños del ${contextoFDS})` : ''}`)
+        );
+
+        for (const { empleado, contextoFDS } of tareas) {
+            await publicarCumpleaños(empleado, contextoFDS);
         }
 
     } catch (error) {
