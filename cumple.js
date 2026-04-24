@@ -44,6 +44,19 @@ async function obtenerCumpleañerosPorFecha(fecha) {
     });
 }
 
+const PALETAS = {
+    'ensuritygroup': {
+        primary:     '#570100',
+        secondary:   '#8B0000',
+        promptExtra: 'Color principal vino oscuro #570100, granate profundo, degradado suave hacia borgoña, toques dorados sutiles. Elegante y corporativo.'
+    },
+    default: {
+        primary:     '#007ACC',
+        secondary:   '#005fa3',
+        promptExtra: 'Color principal azul #007ACC, degradado suave, algunos destellos dorados sutiles.'
+    }
+};
+
 function obtenerUrlLogoPorEmail(email) {
     if (!email) return null;
     const dominio = email.split('@')[1]?.toLowerCase() || '';
@@ -51,6 +64,15 @@ function obtenerUrlLogoPorEmail(email) {
         if (dominio.includes(key)) return url;
     }
     return null;
+}
+
+function obtenerPaletaPorEmail(email) {
+    if (!email) return PALETAS.default;
+    const dominio = email.split('@')[1]?.toLowerCase() || '';
+    for (const key of Object.keys(PALETAS)) {
+        if (key !== 'default' && dominio.includes(key)) return PALETAS[key];
+    }
+    return PALETAS.default;
 }
 
 async function generarMensaje(nombre, contextoFDS = null) {
@@ -66,10 +88,10 @@ async function generarMensaje(nombre, contextoFDS = null) {
     return response.content[0].text;
 }
 
-async function generarFondo() {
+async function generarFondo(paleta = PALETAS.default) {
     const response = await openai.images.generate({
         model: 'dall-e-3',
-        prompt: `Fondo corporativo minimalista para tarjeta de cumpleaños. Color principal azul #007ACC, degradado suave, formas geométricas simples y elegantes, algunos destellos dorados sutiles. Sin personas, sin texto, sin globos. No incluyas ningún texto, letra, número ni símbolo escrito en la imagen.`,
+        prompt: `Fondo corporativo minimalista para tarjeta de cumpleaños. ${paleta.promptExtra} Formas geométricas simples y elegantes. Sin personas, sin texto, sin globos. No incluyas ningún texto, letra, número ni símbolo escrito en la imagen.`,
         n: 1,
         size: '1024x1024'
     });
@@ -118,7 +140,7 @@ async function componerImagen(fotoPerfilUrl, fondoUrl, logoUrl = null) {
         .toBuffer();
 }
 
-async function agregarTextoArco(imageBuffer, nombre) {
+async function agregarTextoArco(imageBuffer, nombre, paleta = PALETAS.default) {
     const img = await loadImage(imageBuffer);
     const canvas = createCanvas(1024, 1024);
     const ctx = canvas.getContext('2d');
@@ -132,7 +154,7 @@ async function agregarTextoArco(imageBuffer, nombre) {
 
     ctx.font = 'bold 52px Pacifico';
     ctx.fillStyle = '#FFFFFF';
-    ctx.strokeStyle = '#007ACC';
+    ctx.strokeStyle = paleta.primary;
     ctx.lineWidth = 4;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -177,17 +199,18 @@ async function publicarCumpleaños(empleado, contextoFDS = null) {
         console.log(`Generando mensaje e imagen para ${nombre}${contextoFDS ? ` (cumpleaños del ${contextoFDS})` : ''}...`);
 
         const logoUrl = obtenerUrlLogoPorEmail(empleado.EMAIL);
-        if (logoUrl) console.log(`Logo encontrado para dominio: ${empleado.EMAIL?.split('@')[1]}`);
-        else console.log(`Sin logo para el correo: ${empleado.EMAIL}`);
+        const paleta = obtenerPaletaPorEmail(empleado.EMAIL);
+        const dominio = empleado.EMAIL?.split('@')[1] || 'desconocido';
+        console.log(`Dominio: ${dominio} | Paleta: ${paleta.primary} | Logo: ${logoUrl ? 'sí' : 'no'}`);
 
         const [textoGenerado, fondoUrl] = await Promise.all([
             generarMensaje(nombre, contextoFDS),
-            generarFondo()
+            generarFondo(paleta)
         ]);
 
         console.log('Componiendo imagen...');
         const imagenCompuesta = await componerImagen(empleado.PERSONAL_PHOTO, fondoUrl, logoUrl);
-        const imagenFinal = await agregarTextoArco(imagenCompuesta, nombre);
+        const imagenFinal = await agregarTextoArco(imagenCompuesta, nombre, paleta);
 
         console.log('Subiendo imagen a Bitrix24...');
         const imagenUrl = await subirImagenBitrix(imagenFinal, nombre);
