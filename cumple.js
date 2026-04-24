@@ -11,6 +11,12 @@ const BITRIX_WEBHOOK_URL = process.env.BITRIX_WEBHOOK_URL;
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, timeout: 30000 });
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+const LOGOS_POR_DOMINIO = {
+    'myhealthprograms': 'https://cdn.bitrix24.com/b21945603/landing/d5a/d5a5cc8c028f267237d646cd2a90473b/dise_o_sin_t_tulo_4_1x_1x.png',
+    'ensuritygroup':    'https://cdn.bitrix24.com/b21945603/landing/898/8989ac3a7b465689d46cb6fd83474a26/Logo_Ensurity_Group_1080_500_px_1x.png',
+    'egconnects':       'https://cdn.bitrix24.com/b21945603/landing/37d/37de78de37b7f13e5af735d1e1a6532f/Untitled_180_60_px_1_1x.png'
+};
+
 async function obtenerCumpleañerosPorFecha(fecha) {
     const mes = fecha.getMonth() + 1;
     const dia = fecha.getDate();
@@ -22,7 +28,7 @@ async function obtenerCumpleañerosPorFecha(fecha) {
         const response = await axios.post(`${BITRIX_WEBHOOK_URL}user.get`, {
             ACTIVE: true,
             start,
-            SELECT: ['ID', 'NAME', 'LAST_NAME', 'PERSONAL_BIRTHDAY', 'PERSONAL_PHOTO']
+            SELECT: ['ID', 'NAME', 'LAST_NAME', 'PERSONAL_BIRTHDAY', 'PERSONAL_PHOTO', 'EMAIL']
         });
         const data = response.data;
         usuarios = usuarios.concat(data.result);
@@ -36,6 +42,15 @@ async function obtenerCumpleañerosPorFecha(fecha) {
         const [, mesBD, diaBD] = fechaStr.split('-').map(Number);
         return mesBD === mes && diaBD === dia;
     });
+}
+
+function obtenerUrlLogoPorEmail(email) {
+    if (!email) return null;
+    const dominio = email.split('@')[1]?.toLowerCase() || '';
+    for (const [key, url] of Object.entries(LOGOS_POR_DOMINIO)) {
+        if (dominio.includes(key)) return url;
+    }
+    return null;
 }
 
 async function generarMensaje(nombre, contextoFDS = null) {
@@ -61,7 +76,7 @@ async function generarFondo() {
     return response.data[0].url;
 }
 
-async function componerImagen(fotoPerfilUrl, fondoUrl) {
+async function componerImagen(fotoPerfilUrl, fondoUrl, logoUrl = null) {
     const [fondoBuffer, fotoBuffer] = await Promise.all([
         axios.get(fondoUrl, { responseType: 'arraybuffer' }).then(r => Buffer.from(r.data)),
         axios.get(fotoPerfilUrl.replace(/"/g, ''), { responseType: 'arraybuffer' }).then(r => Buffer.from(r.data))
@@ -80,9 +95,25 @@ async function componerImagen(fotoPerfilUrl, fondoUrl) {
     const left = Math.round((1024 - TAM) / 2);
     const top = Math.round((1024 - TAM) / 2);
 
+    const composites = [{ input: fotoCircular, left, top }];
+
+    if (logoUrl) {
+        const logoBuffer = await axios.get(logoUrl, { responseType: 'arraybuffer' }).then(r => Buffer.from(r.data));
+        const logoResized = await sharp(logoBuffer)
+            .resize(280, 90, { fit: 'inside' })
+            .png()
+            .toBuffer();
+        const { width: logoW, height: logoH } = await sharp(logoResized).metadata();
+        composites.push({
+            input: logoResized,
+            left: Math.round((1024 - logoW) / 2),
+            top: 1024 - logoH - 35
+        });
+    }
+
     return sharp(fondoBuffer)
         .resize(1024, 1024)
-        .composite([{ input: fotoCircular, left, top }])
+        .composite(composites)
         .png()
         .toBuffer();
 }
@@ -145,13 +176,17 @@ async function publicarCumpleaños(empleado, contextoFDS = null) {
         const nombre = `${empleado.NAME} ${empleado.LAST_NAME}`.trim();
         console.log(`Generando mensaje e imagen para ${nombre}${contextoFDS ? ` (cumpleaños del ${contextoFDS})` : ''}...`);
 
+        const logoUrl = obtenerUrlLogoPorEmail(empleado.EMAIL);
+        if (logoUrl) console.log(`Logo encontrado para dominio: ${empleado.EMAIL?.split('@')[1]}`);
+        else console.log(`Sin logo para el correo: ${empleado.EMAIL}`);
+
         const [textoGenerado, fondoUrl] = await Promise.all([
             generarMensaje(nombre, contextoFDS),
             generarFondo()
         ]);
 
         console.log('Componiendo imagen...');
-        const imagenCompuesta = await componerImagen(empleado.PERSONAL_PHOTO, fondoUrl);
+        const imagenCompuesta = await componerImagen(empleado.PERSONAL_PHOTO, fondoUrl, logoUrl);
         const imagenFinal = await agregarTextoArco(imagenCompuesta, nombre);
 
         console.log('Subiendo imagen a Bitrix24...');
